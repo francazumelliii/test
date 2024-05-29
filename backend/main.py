@@ -88,4 +88,29 @@ async def get_restaurant_from_id(request: Request):
         cursor.close()
     
     
+
+
+
+
+
+@app.get("/ping")
+async def ping():
+	return JSONResponse(content = "pong")
+
+
+@app.get("/turns")
+async def get_all_turns(): 
+    try: 
+        cursor = conn.cursor(dictionary=True)
+        query = "SELECT id, TIME_FORMAT(ora_inizio, '%H:%i:%s') AS ora_inizio, TIME_FORMAT(ora_fine, '%H:%i:%s') AS ora_fine FROM turno"
+        cursor.execute(query)
+        result = cursor.fetchall()
+        
+        return JSONResponse(content = result)
+    except mysql.connector.Error as err:
+        return JSONResponse(content={"error": f"Errore nel recupero dei dati: {err}"})
+    finally:
+            cursor.close()
+            
+            
 # + group by l.id
