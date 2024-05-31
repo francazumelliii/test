@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request,Query
 from fastapi.responses import JSONResponse
 import mysql.connector
 from mysql.connector import Error
@@ -229,5 +229,18 @@ async def insert_reservation(request: Request):
         if conn:
             conn.close()
 
-
-    
+@app.get("/imgs")
+async def get_all_imgs(id: str = Query(..., description="ID locale")): 
+    try: 
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        query = "SELECT * FROM imgs WHERE id_locale = %s"
+        cursor.execute(query, (id,))
+        result = cursor.fetchall()
+        return JSONResponse(content = result)
+    except mysql.connector.Error as err:
+        return JSONResponse(content={"Error": f"Error in retrieving data: {err}"},status_code=400)
+        
+    finally: 
+        cursor.close()
+        conn.close()
