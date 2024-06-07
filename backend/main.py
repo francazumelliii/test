@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 import mysql.connector
 from mysql.connector import Error
 import logging
+from pydantic import BaseModel
 from decimal import Decimal
 
 # Initialize the FastAPI app
@@ -142,18 +143,19 @@ async def get_all_turns():
         conn.close()
 
 
+class TableCheckRequest(BaseModel):
+    date: str
+    turn: int
+    id: int
+    
+    
 @app.post("/check_tables")
-async def check_tables(request: Request):
+async def check_tables(request: Request, data: TableCheckRequest):
     try:
-        data = await request.json()
         conn = get_db_connection()
         if not conn:
             return JSONResponse(content={"error": "Could not connect to the database"}, status_code=500)
-        cursor = conn.cursor(dictionary=True)
-
-        date_str = data.get("date")
-        turn_id = data.get("turn")
-        restaurant_id = data.get("id")
+        cursor = conn.cursor()
 
         query = """
         SELECT 
@@ -161,53 +163,45 @@ async def check_tables(request: Request):
             locale.posti_max AS max
         FROM 
             locale 
-        INNER JOIN 
-            prenota ON prenota.id_locale = locale.id 
-        INNER JOIN 
-            turno ON turno.id = prenota.id_turno 
+        LEFT JOIN 
+            prenota ON prenota.id_locale = locale.id AND prenota.data = %s AND prenota.id_turno = %s
         WHERE 
-            turno.id = %s AND prenota.data = %s AND locale.id = %s
+            locale.id = %s
         GROUP BY 
             locale.posti_max
         """
 
-        logging.debug(f"Executing query: {query}")
-        logging.debug(f"With parameters: turn_id={turn_id}, date_str={date_str}, restaurant_id={restaurant_id}")
-
-        cursor.execute(query, (turn_id, date_str, restaurant_id))
+        cursor.execute(query, (data.date, data.turn, data.id))
         result = cursor.fetchone()
 
-        logging.debug(f"Query result: {result}")
-
         if not result:
-            return JSONResponse(content={"message": "No results found"}, status_code=200)
+            # Se non ci sono prenotazioni per questo locale, restituisci solo il numero massimo di posti
+            max_seats_query = """
+            SELECT posti_max FROM locale WHERE id = %s
+            """
+            cursor.execute(max_seats_query, (data.id,))
+            max_seats_result = cursor.fetchone()
+            if max_seats_result:
+                return JSONResponse(content={"available_seats": max_seats_result[0]}, status_code=200)
+            else:
+                return JSONResponse(content={"message": "No results found"}, status_code=200)
 
-        # Convert Decimal values to float
-        result = convert_decimal_to_float(result)
+        # Calcola i posti disponibili
+        total_reserved = result[0] or 0  # Se total_reserved è None, assegna 0
+        max_seats = result[1] or 0  # Se max_seats è None, assegna 0
+        available_seats = max_seats - total_reserved
 
-        return JSONResponse(content=result)
+        return JSONResponse(content={"available_seats": available_seats}, status_code=200)
+
     except Error as err:
         logging.error(f"Error retrieving data: {err}")
-        logging.error(f"Query: {query}")
-        logging.error(f"Parameters: turn_id={turn_id}, date_str={date_str}, restaurant_id={restaurant_id}")
-        return JSONResponse(content={"error": f"Errore nel recupero dei dati: {err}"}, status_code=500)
+        return JSONResponse(content={"error": f"Error retrieving data: {err}"}, status_code=500)
     finally:
         if cursor:
             cursor.close()
         if conn:
             conn.close()
 
-            
-            
-            
-def convert_decimal_to_float(data):
-    if isinstance(data, list):
-        return [convert_decimal_to_float(item) for item in data]
-    if isinstance(data, dict):
-        return {key: convert_decimal_to_float(value) for key, value in data.items()}
-    if isinstance(data, Decimal):
-        return float(data)
-    return data
 
 
 @app.post("/insert_reservation")
@@ -244,3 +238,74 @@ async def get_all_imgs(id: str = Query(..., description="ID locale")):
     finally: 
         cursor.close()
         conn.close()
+        
+@app.post("/get_nearest")
+async def get_nearest(request: Request): 
+    try: 
+        conn = get_db_connection()
+        data = await request.json()
+        cursor = conn.cursor(dictionary=True)
+        
+        village = data.get("village")
+        county = data.get("county")
+        state = data.get("state")
+        
+
+        query = baseSQL + " WHERE "
+        
+        conditions = []
+        if village:
+            conditions.append(f"c.nome LIKE '{village}'")
+        if county:
+            conditions.append(f"p.nome LIKE '{county}'")
+        if state:
+            conditions.append(f"r.nome LIKE '{state}'")
+        
+        # Unisci le condizioni con AND
+        query += " AND ".join(conditions)
+        query += " GROUP BY l.id"
+        
+        cursor.execute(query)
+        result = cursor.fetchall()
+        
+        return result
+        
+    except mysql.connector.Error as err:
+        return JSONResponse(content={"Error": f"Error in retrieving data: {err}"},status_code=400)
+    finally: 
+        cursor.close()
+        conn.close()
+        
+        
+@app.post("/get_others")
+async def get_others(request: Request):
+    conn = None
+    cursor = None
+    try:
+        data = await request.json()
+        ids = data.get("ids")
+        village = data.get("village")
+        county = data.get("county")
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Constructing the SQL query
+        query = baseSQL + """
+         WHERE (p.nome = %s OR c.nome = %s)
+        AND l.id NOT IN ({}) GROUP BY l.id
+        """.format(','.join(['%s'] * len(ids)))
+
+        params = [county, village] + ids
+
+        cursor.execute(query, params)
+        result = cursor.fetchall()
+
+        return JSONResponse(content=result)
+    except mysql.connector.Error as err:
+        return JSONResponse(content={"Error": f"Error in retrieving data: {err}"}, status_code=400)
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
