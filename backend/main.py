@@ -1,12 +1,14 @@
-from fastapi import FastAPI, Request,Query
+from fastapi import FastAPI, Request, Query, HTTPException
 from fastapi.responses import JSONResponse
 import mysql.connector
 from mysql.connector import Error
 import logging
 from pydantic import BaseModel
-from decimal import Decimal
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
+import os
 
-# Initialize the FastAPI app
 app = FastAPI()
 
 # Set up logging
@@ -75,6 +77,8 @@ INNER JOIN piatto pi ON pi.id_menu = m.id
 
 @app.get("/get_all_restaurants")
 async def get_all():
+    await verify_token(request)
+    return {"message": "This is a protected route"}
     conn = get_db_connection()
     if not conn:
         return JSONResponse(content={"error": "Could not connect to the database"}, status_code=500)
@@ -94,6 +98,8 @@ async def get_all():
 
 @app.post("/get_restaurant_from_id")
 async def get_restaurant_from_id(request: Request):
+    await verify_token(request)
+    return {"message": "This is a protected route"}
     conn = get_db_connection()
     if not conn:
         return JSONResponse(content={"error": "Could not connect to the database"}, status_code=500)
@@ -125,6 +131,8 @@ async def ping():
 
 @app.get("/turns")
 async def get_all_turns():
+    await verify_token(request)
+    return {"message": "This is a protected route"}
     conn = get_db_connection()
     if not conn:
         return JSONResponse(content={"error": "Could not connect to the database"}, status_code=500)
@@ -151,6 +159,8 @@ class TableCheckRequest(BaseModel):
     
 @app.post("/check_tables")
 async def check_tables(request: Request, data: TableCheckRequest):
+    await verify_token(request)
+    return {"message": "This is a protected route"}
     try:
         conn = get_db_connection()
         if not conn:
@@ -206,6 +216,8 @@ async def check_tables(request: Request, data: TableCheckRequest):
 
 @app.post("/insert_reservation")
 async def insert_reservation(request: Request):
+    await verify_token(request)
+    return {"message": "This is a protected route"}
     try:
         data = await request.json()
         conn = get_db_connection()
@@ -225,6 +237,8 @@ async def insert_reservation(request: Request):
 
 @app.get("/imgs")
 async def get_all_imgs(id: str = Query(..., description="ID locale")): 
+    await verify_token(request)
+    return {"message": "This is a protected route"}
     try: 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -241,6 +255,8 @@ async def get_all_imgs(id: str = Query(..., description="ID locale")):
         
 @app.post("/get_nearest")
 async def get_nearest(request: Request): 
+    await verify_token(request)
+    return {"message": "This is a protected route"}
     try: 
         conn = get_db_connection()
         data = await request.json()
@@ -279,6 +295,8 @@ async def get_nearest(request: Request):
         
 @app.post("/get_others")
 async def get_others(request: Request):
+    await verify_token(request)
+    return {"message": "This is a protected route"}
     conn = None
     cursor = None
     try:
@@ -309,3 +327,135 @@ async def get_others(request: Request):
             cursor.close()
         if conn:
             conn.close()
+            
+            
+            
+            
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# JWT configuration
+SECRET_KEY = os.urandom(32)
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+# Middleware for JWT token verification
+async def verify_token(request: Request, call_next):
+    token = request.headers.get("Authorization")
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        request.state.user = payload
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    response = await call_next(request)
+    return response
+
+# Apply middleware to all routes that require token verification
+
+
+
+
+
+@app.post("/signup")
+async def signup(request: Request):
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return JSONResponse(content={"error": "Could not connect to the database"}, status_code=500)
+
+        data = await request.json()
+        name = data.get("name")
+        surname = data.get("surname")
+        email = data.get("email")
+        password = data.get("password")
+
+        if not name or not surname or not email or not password:
+            return JSONResponse(content={"error": "Missing required fields"}, status_code=400)
+
+        cursor = conn.cursor(dictionary=True)
+        
+        # Check if user already exists
+        check_user_query = "SELECT * FROM cliente WHERE mail = %s"
+        cursor.execute(check_user_query, (email,))
+        existing_user = cursor.fetchone()
+
+        if existing_user:
+            return JSONResponse(content={"error": "User with this email already exists"}, status_code=400)
+
+        hashed_password = pwd_context.hash(password)
+
+        # Insert new user
+        insert_user_query = "INSERT INTO cliente (nome, cognome, mail, password) VALUES (%s, %s, %s, %s)"
+        cursor.execute(insert_user_query, (name, surname, email, hashed_password))
+        conn.commit()
+
+        # Create JWT token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(data={"sub": email}, expires_delta=access_token_expires)
+
+        return JSONResponse(content={"access_token": access_token, "token_type": "bearer"}, status_code=201)
+    except mysql.connector.Error as err:
+        return JSONResponse(content={"error": f"Error in retrieving data: {err}"}, status_code=500)
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+            
+            
+            
+class SignInRequest(BaseModel):
+    email: str
+    password: str
+    
+    
+@app.post("/signin")
+async def sign_in(request: Request):
+    data = await request.json()
+    email = data.get("email")
+    password = data.get("password")
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Missing email or password")
+
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Could not connect to the database")
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+        query = "SELECT * FROM cliente WHERE mail = %s"
+        cursor.execute(query, (email,))
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        if not pwd_context.verify(password, user['password']):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(data={"sub": email}, expires_delta=access_token_expires)
+
+        return {"access_token": access_token, "token_type": "bearer"}
+
+    except Error as err:
+        raise HTTPException(status_code=500, detail=f"Error in retrieving data: {err}")
