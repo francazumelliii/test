@@ -23,15 +23,15 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE","PATCH"],
     allow_headers=["*"],
 )
 
-# Set up logging
+#Logging service
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Database connection details
+#Db configuration
 db_config = {
     'host': "localhost",
     'user': "root",
@@ -40,12 +40,13 @@ db_config = {
     'port': 3306
 }
 
-# Genera una chiave segreta casuale di lunghezza 32 byte (256 bit)
+#Token generation
 SECRET_KEY = secrets.token_urlsafe(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 
+# db connection
 def get_db_connection():
     try:
         conn = mysql.connector.connect(**db_config)
@@ -55,12 +56,12 @@ def get_db_connection():
         logger.error(f"Error connecting to database: {e}")
     return None
 
-
+#class for signin
 class SignInRequest(BaseModel):
     email: str
     password: str
 
-
+#global exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}")
@@ -69,7 +70,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"message": "Internal server error"}
     )
 
-
+# access token creation
 def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
     if expires_delta:
@@ -80,7 +81,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-
+# token verifying
 async def verify_token(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -91,7 +92,7 @@ async def verify_token(token: str = Depends(oauth2_scheme)):
     except JWTError as e:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-
+#signup function
 @app.post("/signup")
 async def signup(request: Request):
     conn = None
@@ -111,8 +112,7 @@ async def signup(request: Request):
             return JSONResponse(content={"error": "Missing required fields"}, status_code=400)
 
         cursor = conn.cursor(dictionary=True)
-        
-        # Check if user already exists
+        #check if user already exist
         check_user_query = "SELECT * FROM cliente WHERE mail = %s"
         cursor.execute(check_user_query, (email,))
         existing_user = cursor.fetchone()
@@ -122,12 +122,12 @@ async def signup(request: Request):
 
         hashed_password = pwd_context.hash(password)
 
-        # Insert new user
+        #if not exist, insert new user
         insert_user_query = "INSERT INTO cliente (nome, cognome, mail, password) VALUES (%s, %s, %s, %s)"
         cursor.execute(insert_user_query, (name, surname, email, hashed_password))
         conn.commit()
 
-        # Create JWT token
+        # create JWT token
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(data={"sub": email}, expires_delta=access_token_expires)
 
@@ -140,7 +140,7 @@ async def signup(request: Request):
         if conn:
             conn.close()
 
-
+#login function
 @app.post("/signin")
 async def signin(request: SignInRequest):
     conn = None
@@ -168,7 +168,7 @@ async def signin(request: SignInRequest):
         if conn:
             conn.close()
 
-
+#post for token verification frontend
 @app.post("/verify_token")
 async def verify_token_route(authorization: str = Header(None)):
     if authorization is None:
@@ -189,7 +189,7 @@ async def verify_token_route(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-# Base SQL query
+#base sql 
 baseSQL = """
 SELECT 
     l.id AS id_locale,
@@ -230,7 +230,7 @@ INNER JOIN menu m ON m.id_locale = l.id
 INNER JOIN piatto pi ON pi.id_menu = m.id
 
 """
-
+#get all restaurants in db
 @app.get("/get_all_restaurants")
 async def get_all_restaurants(request: Request, token: str = Depends(verify_token)):
     logger.info("Attempting to retrieve all restaurants...")
@@ -260,6 +260,7 @@ async def get_all_restaurants(request: Request, token: str = Depends(verify_toke
         if conn:
             conn.close()
 
+#search restaurants
 @app.get("/search_restaurants")
 async def search_restaurants(
     nome_locale: str = Query(None), 
@@ -313,6 +314,7 @@ async def search_restaurants(
             conn.close()
 
 
+#get a restaurant from id 
 @app.post("/get_restaurant_from_id")
 
 async def get_restaurant_from_id(request: Request, token: str = Depends(verify_token)):
@@ -341,12 +343,13 @@ async def get_restaurant_from_id(request: Request, token: str = Depends(verify_t
         cursor.close()
         conn.close()
 
+#test function
 @app.get("/ping")
 async def ping():
     return JSONResponse(content="pong")
 
+#get all turns function
 @app.get("/turns")
-
 async def get_all_turns(request: Request, token: str = Depends(verify_token)):
 
     conn = get_db_connection()
@@ -367,14 +370,14 @@ async def get_all_turns(request: Request, token: str = Depends(verify_token)):
         conn.close()
 
 
+# class for available tables in restaurant
 class TableCheckRequest(BaseModel):
     date: str
     turn: int
     id: int
     
-    
+# tables availability function
 @app.post("/check_tables")
-
 async def check_tables(request: Request, data: TableCheckRequest,token: str = Depends(verify_token)):
     try:
         conn = get_db_connection()
@@ -428,9 +431,8 @@ async def check_tables(request: Request, data: TableCheckRequest,token: str = De
             conn.close()
 
 
-
+# booking table function
 @app.post("/insert_reservation")
-
 async def insert_reservation(request: Request, token: str = Depends(verify_token)):
     try:
         data = await request.json()
@@ -449,8 +451,8 @@ async def insert_reservation(request: Request, token: str = Depends(verify_token
         if conn:
             conn.close()
 
+# get all imgs url 
 @app.get("/imgs")
-
 async def get_all_imgs(id: str = Query(..., description="ID locale"), token: str = Depends(verify_token)): 
     try: 
         conn = get_db_connection()
@@ -466,8 +468,8 @@ async def get_all_imgs(id: str = Query(..., description="ID locale"), token: str
         cursor.close()
         conn.close()
         
+# get nearest restaurants by location
 @app.post("/get_nearest")
-
 async def get_nearest(request: Request, token: str = Depends(verify_token)): 
     try: 
         conn = get_db_connection()
@@ -505,8 +507,8 @@ async def get_nearest(request: Request, token: str = Depends(verify_token)):
         conn.close()
         
         
+#get others restaurant in same county or village
 @app.post("/get_others")
-
 async def get_others(request: Request, token: str = Depends(verify_token)):
     conn = None
     cursor = None
