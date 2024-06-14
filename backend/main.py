@@ -6,9 +6,11 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import mysql.connector
+from mysql.connector import Error as MySQLError 
 import logging
 from functools import wraps
 from pydantic import BaseModel
+import sqlite3
 import os
 import secrets
 
@@ -43,7 +45,7 @@ db_config = {
 #Token generation
 SECRET_KEY = secrets.token_urlsafe(32)
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 240
 
 
 # db connection
@@ -93,7 +95,7 @@ async def verify_token(token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 #signup function
-@app.post("/signup")
+@app.post("/api/v1/signup")
 async def signup(request: Request):
     conn = None
     cursor = None
@@ -141,7 +143,7 @@ async def signup(request: Request):
             conn.close()
 
 #login function
-@app.post("/signin")
+@app.post("/api/v1/signin")
 async def signin(request: SignInRequest):
     conn = None
     cursor = None
@@ -169,25 +171,32 @@ async def signin(request: SignInRequest):
             conn.close()
 
 #post for token verification frontend
-@app.post("/verify_token")
+@app.post("/api/v1/verify_token")
 async def verify_token_route(authorization: str = Header(None)):
     if authorization is None:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
     
+    # Divide l'header in schema e token solo se presente lo spazio
+    auth_parts = authorization.split()
+    if len(auth_parts) != 2:
+        raise HTTPException(status_code=401, detail="Invalid Authorization header format")
+    
+    scheme, token = auth_parts
+    
     try:
-        scheme, token = authorization.split()
         if scheme.lower() != "bearer":
             raise HTTPException(status_code=401, detail="Invalid authorization scheme")
         
+        # Verifica la firma del token e ottieni il payload
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
             raise HTTPException(status_code=401, detail="Invalid token")
         
+        # Se il token è valido, restituisci una risposta positiva
         return {"valid": True}
     except JWTError as e:
         raise HTTPException(status_code=401, detail="Invalid token")
-
 
 #base sql 
 baseSQL = """
@@ -231,7 +240,7 @@ INNER JOIN piatto pi ON pi.id_menu = m.id
 
 """
 #get all restaurants in db
-@app.get("/get_all_restaurants")
+@app.get("/api/v1/get_all_restaurants")
 async def get_all_restaurants(request: Request, token: str = Depends(verify_token)):
     logger.info("Attempting to retrieve all restaurants...")
     conn = None
@@ -315,7 +324,7 @@ async def search_restaurants(
 
 
 #get a restaurant from id 
-@app.post("/get_restaurant_from_id")
+@app.post("/api/v1/get_restaurant_from_id")
 
 async def get_restaurant_from_id(request: Request, token: str = Depends(verify_token)):
     conn = get_db_connection()
@@ -349,7 +358,7 @@ async def ping():
     return JSONResponse(content="pong")
 
 #get all turns function
-@app.get("/turns")
+@app.get("/api/v1/turns")
 async def get_all_turns(request: Request, token: str = Depends(verify_token)):
 
     conn = get_db_connection()
@@ -377,7 +386,7 @@ class TableCheckRequest(BaseModel):
     id: int
     
 # tables availability function
-@app.post("/check_tables")
+@app.post("/api/v1/check_tables")
 async def check_tables(request: Request, data: TableCheckRequest,token: str = Depends(verify_token)):
     try:
         conn = get_db_connection()
@@ -421,7 +430,7 @@ async def check_tables(request: Request, data: TableCheckRequest,token: str = De
 
         return JSONResponse(content={"available_seats": available_seats}, status_code=200)
 
-    except Error as err:
+    except MySQLError as err:
         logging.error(f"Error retrieving data: {err}")
         return JSONResponse(content={"error": f"Error retrieving data: {err}"}, status_code=500)
     finally:
@@ -432,15 +441,15 @@ async def check_tables(request: Request, data: TableCheckRequest,token: str = De
 
 
 # booking table function
-@app.post("/insert_reservation")
+@app.post("/api/v1/insert_reservation")
 async def insert_reservation(request: Request, token: str = Depends(verify_token)):
     try:
         data = await request.json()
         conn = get_db_connection()
         id, turn, date, qt, email = data.get("id"), data.get("turn"), data.get("date"), data.get("qt"), data.get("email")
         cursor = conn.cursor(dictionary=True)
-        query = "INSERT INTO prenota VALUES (%s,%s,%s,%s,%s)"
-        cursor.execute(query, (email, id, date, qt, turn))
+        query = "INSERT INTO prenota (mail_prenotazione,data,num_posti,id_turno,id_locale) VALUES (%s,%s,%s,%s,%s)"
+        cursor.execute(query, (email, date, qt ,turn, id))
         conn.commit()  # Assicurati di eseguire il commit per salvare le modifiche nel database
         return JSONResponse(content={"message": "Reservation successfully inserted"},status_code=200)
     except mysql.connector.Error as err:
@@ -452,7 +461,7 @@ async def insert_reservation(request: Request, token: str = Depends(verify_token
             conn.close()
 
 # get all imgs url 
-@app.get("/imgs")
+@app.get("/api/v1/imgs")
 async def get_all_imgs(id: str = Query(..., description="ID locale"), token: str = Depends(verify_token)): 
     try: 
         conn = get_db_connection()
@@ -469,7 +478,7 @@ async def get_all_imgs(id: str = Query(..., description="ID locale"), token: str
         conn.close()
         
 # get nearest restaurants by location
-@app.post("/get_nearest")
+@app.post("/api/v1/get_nearest")
 async def get_nearest(request: Request, token: str = Depends(verify_token)): 
     try: 
         conn = get_db_connection()
@@ -508,7 +517,7 @@ async def get_nearest(request: Request, token: str = Depends(verify_token)):
         
         
 #get others restaurant in same county or village
-@app.post("/get_others")
+@app.post("/api/v1/get_others")
 async def get_others(request: Request, token: str = Depends(verify_token)):
     conn = None
     cursor = None
@@ -541,3 +550,123 @@ async def get_others(request: Request, token: str = Depends(verify_token)):
         if conn:
             conn.close()
             
+#get email from token and get user
+# importa le librerie necessarie
+from fastapi import Depends, HTTPException
+from mysql.connector import connect, Error
+from fastapi.responses import JSONResponse
+from jose import jwt, JWTError
+from datetime import datetime, timedelta
+
+
+# Funzione per ottenere l'email dal token JWT
+async def get_email_from_token(token: str = Depends(verify_token)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Email non trovata nel token")
+        return email
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail="Token JWT non valido")
+
+
+# Configurazione del logger
+logging.basicConfig(level=logging.INFO)
+
+
+from fastapi import Header
+async def get_email_from_token(authorization: str = Header(None)):
+    try:
+        if authorization is None:
+            raise HTTPException(status_code=401, detail="Missing Authorization header")
+        
+        # Divide l'header in schema e token solo se presente lo spazio
+        auth_parts = authorization.split()
+        if len(auth_parts) != 2:
+            raise HTTPException(status_code=401, detail="Invalid Authorization header format")
+        
+        scheme, token = auth_parts
+        
+        if scheme.lower() != "bearer":
+            raise HTTPException(status_code=401, detail="Invalid authorization scheme")
+        
+        # Verifica la firma del token e ottieni il payload
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Email non trovata nel token")
+        
+        return email
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail="Token JWT non valido")
+
+
+@app.get("/api/v1/user")
+async def get_user_from_email(email: str = Depends(get_email_from_token)):
+    conn = None
+    try:
+        logging.debug("Connessione al database...")
+        conn = get_db_connection()
+
+        cursor = conn.cursor(dictionary=True)
+        query = "SELECT * FROM CLIENTE WHERE mail = %s"
+        cursor.execute(query, (email.lower(),))  # email dovrebbe essere una tupla
+        result = cursor.fetchone()
+        
+        user = {
+                "mail" : result["mail"],
+                "nome" : result["nome"],
+                "cognome" : result["cognome"]
+            }
+        if result: 
+            logging.debug("Utente trovato nel database")
+            return JSONResponse(content=user)
+        else:
+            logging.error("Utente non trovato nel database")
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+    except Error as err:
+        logging.error(f"Errore nel recupero dei dati dal database: {err}")
+        raise HTTPException(status_code=400, detail=f"Errore nel recupero dei dati: {err}")
+    finally:
+        if conn:
+            conn.close()
+            
+            
+@app.patch("/api/v1/user")
+async def patch_user(request: Request, token: str = Depends(verify_token)): 
+    try: 
+        data = await request.json()
+        name = data.get("name")
+        surname = data.get("surname")
+        mail = data.get("mail")
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        query = "UPDATE cliente SET nome = %s, cognome = %s WHERE mail = %s"
+        cursor.execute(query, (name, surname, mail))
+        conn.commit()
+        
+        if cursor.rowcount > 0:
+            return JSONResponse(content={"success": True})
+        else: 
+            return JSONResponse(content={"success": False})
+        
+    except MySQLError as err: 
+        raise HTTPException(status_code=400, detail=f"Errore nel recupero dei dati: {err}")
+    finally: 
+        if conn.is_connected():
+            conn.close()
+        
+@app.get("/api/v1/user/reservation")
+async def get_user_reservation(mail: str): 
+    try: 
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        query = ""
+        
+    except: 
+        return
+    finally: 
+        conn.close()
