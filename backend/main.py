@@ -1,3 +1,4 @@
+from typing import List
 from fastapi import FastAPI, Request, HTTPException, Depends, Query, Header, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,8 +12,9 @@ import logging
 from functools import wraps
 from pydantic import BaseModel
 import sqlite3
-import os
 import secrets
+import os
+
 
 app = FastAPI()
 
@@ -57,6 +59,8 @@ def get_db_connection():
     except mysql.connector.Error as e:
         logger.error(f"Error connecting to database: {e}")
     return None
+    
+
 
 #class for signin
 class SignInRequest(BaseModel):
@@ -240,7 +244,7 @@ INNER JOIN piatto pi ON pi.id_menu = m.id
 
 """
 #get all restaurants in db
-@app.get("/api/v1/get_all_restaurants")
+@app.get("/api/v1/restaurant/all")
 async def get_all_restaurants(request: Request, token: str = Depends(verify_token)):
     logger.info("Attempting to retrieve all restaurants...")
     conn = None
@@ -386,8 +390,8 @@ class TableCheckRequest(BaseModel):
     id: int
     
 # tables availability function
-@app.post("/api/v1/check_tables")
-async def check_tables(request: Request, data: TableCheckRequest,token: str = Depends(verify_token)):
+@app.get("/api/v1/tables")
+async def check_tables(date: str, turn: str | int, id: str | int,token: str = Depends(verify_token)):
     try:
         conn = get_db_connection()
         if not conn:
@@ -408,7 +412,7 @@ async def check_tables(request: Request, data: TableCheckRequest,token: str = De
             locale.posti_max
         """
 
-        cursor.execute(query, (data.date, data.turn, data.id))
+        cursor.execute(query, (date,turn,id))
         result = cursor.fetchone()
 
         if not result:
@@ -441,7 +445,7 @@ async def check_tables(request: Request, data: TableCheckRequest,token: str = De
 
 
 # booking table function
-@app.post("/api/v1/insert_reservation")
+@app.post("/api/v1/restaurant/reservation")
 async def insert_reservation(request: Request, token: str = Depends(verify_token)):
     try:
         data = await request.json()
@@ -478,18 +482,11 @@ async def get_all_imgs(id: str = Query(..., description="ID locale"), token: str
         conn.close()
         
 # get nearest restaurants by location
-@app.post("/api/v1/get_nearest")
-async def get_nearest(request: Request, token: str = Depends(verify_token)): 
+@app.get("/api/v1/restaurant/nearest")
+async def get_nearest(village: str = Query(""),county: str = Query(""), state: str = Query(""), token: str = Depends(verify_token)): 
     try: 
         conn = get_db_connection()
-        data = await request.json()
         cursor = conn.cursor(dictionary=True)
-        
-        village = data.get("village")
-        county = data.get("county")
-        state = data.get("state")
-        
-
         query = baseSQL + " WHERE "
         
         conditions = []
@@ -506,8 +503,12 @@ async def get_nearest(request: Request, token: str = Depends(verify_token)):
         
         cursor.execute(query)
         result = cursor.fetchall()
+        if result: 
+            response = {"success" : True, "data": result}
+        else: 
+            response = {"success" : False}
         
-        return result
+        return JSONResponse(content = response)
         
     except mysql.connector.Error as err:
         return JSONResponse(content={"Error": f"Error in retrieving data: {err}"},status_code=400)
@@ -668,5 +669,51 @@ async def get_user_reservation(mail: str):
         
     except: 
         return
+    finally: 
+        conn.close()
+        
+        
+@app.get("/api/v1/restaurant")
+async def get_from_id(id: int | str, token: str = Depends(verify_token)): 
+    try:    
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+        query = baseSQL + " WHERE l.id = %s GROUP BY l.id"
+        cursor.execute(query,(id,))
+        result = cursor.fetchone()
+        
+        if result: 
+            response = {"success": True, "data": result }
+        else: 
+            response = {"success": False}
+        
+        return JSONResponse(content = response)
+    except MySQLError as err: 
+        raise HTTPException(status_code=400, detail= f"Error retriving data: {err}")
+    finally: 
+        conn.close()
+        
+        
+@app.get("/api/v1/restaurant/others")
+async def get_others(ids: List[int] = Query(...), county: str = Query(""), village: str = Query(""), token = Depends(verify_token)): 
+    try: 
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        query = baseSQL + """
+         WHERE (p.nome = %s OR c.nome = %s)
+        AND l.id NOT IN ({}) GROUP BY l.id
+        """.format(','.join(['%s'] * len(ids)))
+
+        params = [county, village] + ids
+        cursor.execute(query, params)
+        result = cursor.fetchall()
+        
+        if result: 
+            response = {"success": True, "data": result }
+        else: 
+            response = {"success": False}
+        return JSONResponse(content = response)
+    except MySQLError as err:
+        raise HTTPException(status_code=400, detail=f"Error: {err}")
     finally: 
         conn.close()
