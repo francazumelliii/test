@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import List
 from fastapi import FastAPI, Request, HTTPException, Depends, Query, Header, status
 from fastapi.responses import JSONResponse
@@ -777,3 +778,102 @@ async def put_restaurant(request: Request, token:str = Depends(verify_token),id:
     finally: 
         conn.close()
         
+@app.get("/api/v1/restaurant/menu")
+async def get_all_menu(token=Depends(verify_token), id: int = Query("")):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        query = """ 
+            SELECT menu.nome nome_menu, 
+                menu.id id_menu,
+                piatto.nome nome_piatto,
+                piatto.id id_piatto,
+                piatto.descrizione descrizione_piatto,
+                piatto.ingredienti ingredienti_piatto
+            FROM menu 
+            INNER JOIN locale on menu.id_locale = locale.id 
+            INNER JOIN piatto ON piatto.id_menu = menu.id
+            WHERE locale.id = %s
+        """
+        cursor.execute(query, (id,))
+        result = cursor.fetchall()
+        
+        if result:
+            menus = defaultdict(lambda: {"menu_id": None, "menu_name": "", "courses": []})
+            for row in result:
+                course = {
+                    "course_id": row["id_piatto"],
+                    "course_name": row["nome_piatto"],
+                    "course_description": row["descrizione_piatto"],
+                    "course_ingredients": row["ingredienti_piatto"]
+                }
+                menu = menus[row["nome_menu"]]
+                menu["menu_id"] = row["id_menu"]
+                menu["menu_name"] = row["nome_menu"]
+                menu["courses"].append(course)
+            
+            # Convertiamo il defaultdict in una lista di oggetti
+            menu_list = list(menus.values())
+            
+            response = {
+                "success": True,
+                "data": menu_list
+            }
+        else:
+            response = {
+                "success": False,
+                "data": []
+            }
+        return JSONResponse(content=response)
+    except MySQLError as err:
+        raise HTTPException(status_code=400, detail=f"Error: {err}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/menu")
+async def get_menu(id: int | str = Query("")):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        query = """
+            SELECT menu.id id_menu,
+                menu.nome nome_menu,
+                piatto.nome nome_piatto,
+                piatto.id id_piatto,
+                piatto.descrizione descrizione_piatto,
+                piatto.ingredienti ingredienti_piatto 
+            FROM menu 
+            INNER JOIN piatto ON piatto.id_menu = menu.id 
+            WHERE menu.id = %s
+        """
+        cursor.execute(query, (id,))
+        result = cursor.fetchall()
+        
+        if result:
+            menus = defaultdict(list)
+            for row in result:
+                course = {
+                    "course_id": row["id_piatto"],
+                    "course_name": row["nome_piatto"],
+                    "course_description": row["descrizione_piatto"],
+                    "course_ingredients": row["ingredienti_piatto"]
+                }
+                menus[row["nome_menu"]].append(course)
+                
+            # Convertiamo il defaultdict in una lista di oggetti
+            menu_list = [{"menu_name": menu_name, "courses": courses} for menu_name, courses in menus.items()]
+            
+            response = {
+                "success": True,
+                "data": menu_list
+            }
+        else:
+            response = {
+                "success": False,
+                "data": []
+            }
+        return JSONResponse(content=response)
+    except MySQLError as err:
+        raise HTTPException(status_code=400, detail=f"Error: {err}")
+    finally:
+        conn.close()
