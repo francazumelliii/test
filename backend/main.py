@@ -137,6 +137,8 @@ async def signup(request: Request):
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(data={"sub": email}, expires_delta=access_token_expires)
 
+
+
         return JSONResponse(content={"access_token": access_token, "token_type": "bearer"}, status_code=201)
     except mysql.connector.Error as err:
         return JSONResponse(content={"error": f"Error in retrieving data: {err}"}, status_code=500)
@@ -717,3 +719,61 @@ async def get_others(ids: List[int] = Query(...), county: str = Query(""), villa
         raise HTTPException(status_code=400, detail=f"Error: {err}")
     finally: 
         conn.close()
+        
+        
+@app.put("/api/v1/restaurant")
+async def put_restaurant(request: Request, token:str = Depends(verify_token),id: int | str = Query("")): 
+    data = await request.json()
+    
+    name = data.get("name")
+    road = data.get("road")
+    hn = data.get("hn")
+    max_chairs = data.get("max_chairs")
+    village_id = data.get("village_id")
+    description = data.get("description")
+    banner = data.get("banner")
+    try: 
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        query_parts = []
+        params = []
+
+        if name:
+            query_parts.append("nome = %s")
+            params.append(name)
+        if road:
+            query_parts.append("via = %s")
+            params.append(road)
+        if hn:
+            query_parts.append("civico = %s")
+            params.append(hn)
+        if max_chairs:
+            query_parts.append("posti_max = %s")
+            params.append(max_chairs)
+        if village_id:
+            query_parts.append("id_comune = %s")
+            params.append(village_id)
+        if description:
+            query_parts.append("descrizione = %s")
+            params.append(description)
+        if banner:
+            query_parts.append("banner = %s")
+            params.append(banner)
+            
+        query = "UPDATE locale SET " + ", ".join(query_parts)
+        query += " WHERE id = %s"
+        params.append(id)
+        cursor.execute(query, params)
+        conn.commit()
+        
+        logging.info(query)
+        if cursor.rowcount > 0 : 
+            response = {"success": True}
+        else : 
+            response = {"success": False}
+        return JSONResponse(content = response)
+    except MySQLError as err: 
+        raise HTTPException(status_code=400, detail= f"Error: {err}")
+    finally: 
+        conn.close()
+        
